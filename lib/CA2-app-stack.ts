@@ -9,12 +9,29 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 
+import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { SqsDestination } from "aws-cdk-lib/aws-appconfig";
+import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { LambdaAction } from "aws-cdk-lib/aws-cloudwatch-actions";
+import { userInfo } from "os";
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
 
-export class EDAAppStack extends cdk.Stack {
+export class CA2AppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const snsTopic = new sns.Topic(this, "SnsTopic", {
+      displayName: "Demo Topic",
+    })
+
+    const sqsQueue = new sqs.Queue(this, "all-msg-queue", {
+      receiveMessageWaitTime: cdk.Duration.seconds(5),
+    })
+
+    const failureQueue = new sqs.Queue(this, "img-created-queue",  {
+      receiveMessageWaitTime: cdk.Duration.seconds(5),
+    })
 
     const imagesBucket = new s3.Bucket(this, "images", {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -39,6 +56,39 @@ export class EDAAppStack extends cdk.Stack {
     });
 
     // Lambda functions
+
+    const processSNSMessageFn = new lambdanode.NodejsFunction(
+      this,
+      "processSNSFn",
+      {
+        runtime: lambda.Runtime.NODEJS_16_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(3),
+        entry: `${__dirname}/../lambdas/processSnsMessage.ts`,
+      }
+    )
+
+    const processSQSMessageFn = new lambdanode.NodejsFunction(
+      this,
+      "processSQSMsgFn",
+      {
+        runtime: lambda.Runtime.NODEJS_16_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(3),
+        entry: `${__dirname}/../lambdas/processSqsMessage.ts`,
+      }
+    );
+
+    const processFailuresFn = new lambdanode.NodejsFunction(
+      this,
+      "processFailedMsgFn",
+      {
+        runtime: lambda.Runtime.NODEJS_16_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(3),
+        entry: `${__dirname}/../lambdas/processFailures.ts`,
+      }
+    );
 
     const processImageFn = new lambdanode.NodejsFunction(
       this,
@@ -88,6 +138,48 @@ export class EDAAppStack extends cdk.Stack {
       new subs.SqsSubscription(imageProcessQueue)
     );
 
+  // subscrib
+
+  snsTopic.addSubscription(
+    new subs.LambdaSubscription(processSNSMessageFn, {
+      filterPolicy: {
+        user_type: sns.SubscriptionFilter.stringFilter(
+          {allowlist: ['Student', 'Lecturer']}
+        ),
+      },
+    })
+  );
+
+  snsTopic.addSubscription(
+    new subs.SqsSubscription(sqsQueue, {
+      rawMessageDelivery: true,
+      filterPolicy: {
+        user_type: sns.SubscriptionFilter.stringFilter({
+          denylist: ["Lecturer"]
+        }),
+        source: sns.SubscriptionFilter.stringFilter({
+          matchPrefixes: ['Moodle', 'Slack']
+        }),
+      },
+    })
+  );
+
+  // event srcs
+
+  processSQSMessageFn.addEventSource(
+    new SqsEventSource(sqsQueue, {
+      maxBatchingWindow: Duration.seconds(5),
+      maxConcurrency: 2,
+    })
+  );
+
+  processFailuresFn.addEventSource(
+    new SqsEventSource(failureQueue, {
+      maxBatchingWindow: Duration.seconds(5),
+      maxConcurrency: 2,
+    })
+  )
+
    // SQS --> Lambda
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
       batchSize: 5,
@@ -104,6 +196,10 @@ export class EDAAppStack extends cdk.Stack {
     
     new cdk.CfnOutput(this, "bucketName", {
       value: imagesBucket.bucketName,
+    });
+
+    new cdk.CfnOutput(this, "topicARN", {
+      value: newImageTopic.topicArn,
     });
 
 
