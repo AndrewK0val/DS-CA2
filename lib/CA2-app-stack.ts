@@ -12,6 +12,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { SqsDestination } from "aws-cdk-lib/aws-appconfig";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { LambdaAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { userInfo } from "os";
@@ -37,6 +38,19 @@ export class CA2AppStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       publicReadAccess: false,
+    });
+
+    // Queues
+    const badOrdersQueue = new sqs.Queue(this, "bad-orders-q", {
+      retentionPeriod: Duration.minutes(10),
+    });
+
+    const ordersQueue = new sqs.Queue(this, "orders-queue", {
+      deadLetterQueue: {
+        queue: badOrdersQueue,
+        // # of rejections by consumer (lambda function)
+        maxReceiveCount: 1,
+      },
     });
 
       // Integration infrastructure
@@ -120,6 +134,55 @@ export class CA2AppStack extends cdk.Stack {
       })
     );
 
+
+    // Handlers 
+    const processOrdersFn = new NodejsFunction(this, "ProcessOrdersFn", {
+      architecture: lambda.Architecture.ARM_64,
+      runtime: lambda.Runtime.NODEJS_18_X,
+      entry: `${__dirname}/../lambdas/processOrders.ts`,
+      timeout: Duration.seconds(10),
+      memorySize: 128,
+    });
+
+    // Generate test data
+    const generateOrdersFn = new NodejsFunction(this, "GenerateOrdersFn", {
+      architecture: lambda.Architecture.ARM_64,
+      runtime: lambda.Runtime.NODEJS_18_X,
+      entry: `${__dirname}/../lambdas/generateOrders.ts`,
+      timeout: Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        QUEUE_URL: ordersQueue.queueUrl,
+      },
+    });
+
+    const failedOrdersFn = new NodejsFunction(this, "FailedOrdersFn", {
+      architecture: lambda.Architecture.ARM_64,
+      runtime: lambda.Runtime.NODEJS_16_X,
+      entry: `${__dirname}/../lambdas/handleBadOrder.ts`,
+      timeout: Duration.seconds(10),
+      memorySize: 128,
+    });
+
+    // Event sources for lambda functions
+
+    processOrdersFn.addEventSource(
+      new SqsEventSource(ordersQueue, {
+        maxBatchingWindow: Duration.seconds(5),
+        maxConcurrency: 2,  
+      })
+    );
+
+    failedOrdersFn.addEventSource(
+      new SqsEventSource(badOrdersQueue, {
+        maxBatchingWindow: Duration.seconds(5),
+        maxConcurrency: 2,
+      })
+    );
+
+    // IAM rights.
+    ordersQueue.grantSendMessages(generateOrdersFn);
+
     newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
 
 
@@ -202,6 +265,9 @@ export class CA2AppStack extends cdk.Stack {
       value: newImageTopic.topicArn,
     });
 
+    new cdk.CfnOutput(this, "Generator Lambda name", {
+      value: generateOrdersFn.functionName,
+    });
 
   }
 }
