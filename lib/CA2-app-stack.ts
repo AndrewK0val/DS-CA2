@@ -23,15 +23,11 @@ export class CA2AppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const snsTopic = new sns.Topic(this, "SnsTopic", {
+    const newImgTopic = new sns.Topic(this, "newImgTopic", {
       displayName: "Demo Topic",
     })
 
     const sqsQueue = new sqs.Queue(this, "all-msg-queue", {
-      receiveMessageWaitTime: cdk.Duration.seconds(5),
-    })
-
-    const failureQueue = new sqs.Queue(this, "img-created-queue",  {
       receiveMessageWaitTime: cdk.Duration.seconds(5),
     })
 
@@ -154,6 +150,13 @@ export class CA2AppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
+    const rejectionMailerFn = new lambdanode.NodejsFunction(this, 'rejection-mailer-function', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      memorySize: 1024,
+      timeout: cdk.Duration.seconds(3),
+      entry: `${__dirname}/../lambdas/mailer.ts`,
+    })
+
       mailerFn.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -212,13 +215,13 @@ export class CA2AppStack extends cdk.Stack {
     );
 
     confirmationMailerFn.addEventSource(
-      new events.DynamoEventSource( imagesBucket, {
+      new events.DynamoEventSource( imageTable, {
         StartingPosition: lambda.StartingPosition.LATEST,
         retryAttempts: 10
       })
     )
 
-    
+
 
     // IAM rights and Permissions
     ordersQueue.grantSendMessages(generateOrdersFn);
@@ -252,7 +255,7 @@ export class CA2AppStack extends cdk.Stack {
 
   // subscribe
 
-  snsTopic.addSubscription(
+  newImgTopic.addSubscription(
     new subs.LambdaSubscription(processSNSMessageFn, {
       filterPolicy: {
         user_type: sns.SubscriptionFilter.stringFilter(
@@ -262,7 +265,7 @@ export class CA2AppStack extends cdk.Stack {
     })
   );
 
-  snsTopic.addSubscription(
+  newImgTopic.addSubscription(
     new subs.SqsSubscription(sqsQueue, {
       rawMessageDelivery: true,
       filterPolicy: {
@@ -285,20 +288,14 @@ export class CA2AppStack extends cdk.Stack {
     })
   );
 
-  processFailuresFn.addEventSource(
-    new SqsEventSource(failureQueue, {
-      maxBatchingWindow: Duration.seconds(5),
-      maxConcurrency: 2,
-    })
-  )
 
-   // SQS --> Lambda
-    // const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
-    //   batchSize: 5,
-    //   maxBatchingWindow: cdk.Duration.seconds(5),
-    // });
+  //  SQS --> Lambda
+    const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(5),
+    });
 
-    // processImageFn.addEventSource(newImageEventSource);
+    processImageFn.addEventSource(newImageEventSource);
 
 
 
@@ -308,13 +305,6 @@ export class CA2AppStack extends cdk.Stack {
       value: imagesBucket.bucketName,
     });
 
-    new cdk.CfnOutput(this, "topicARN", {
-      value: newImageTopic.topicArn,
-    });
-
-    new cdk.CfnOutput(this, "Generator Lambda name", {
-      value: generateOrdersFn.functionName,
-    });
 
   }
 }
