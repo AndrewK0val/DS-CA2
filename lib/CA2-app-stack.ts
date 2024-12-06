@@ -55,10 +55,16 @@ export class CA2AppStack extends cdk.Stack {
 
       // Integration infrastructure
 
-    const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
+    // const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
+    //   receiveMessageWaitTime: cdk.Duration.seconds(10),
+    // });
 
+    const confirmationMailerFn = new lambdanode.NodejsFunction(this, 'confirmationMailer-function', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      memorySize: 1024,
+      timeout: cdk.Duration.seconds(20),
+      entry: `${__dirname}/../lambdas/confirmationMailer.ts`,
+    })
 
     const mailerQ = new sqs.Queue(this, "mailer-queue", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
@@ -134,7 +140,6 @@ export class CA2AppStack extends cdk.Stack {
       })
     );
 
-
     // Handlers 
     const processOrdersFn = new NodejsFunction(this, "ProcessOrdersFn", {
       architecture: lambda.Architecture.ARM_64,
@@ -180,8 +185,18 @@ export class CA2AppStack extends cdk.Stack {
       })
     );
 
-    // IAM rights.
+    confirmationMailerFn.addEventSource(
+      new events.DynamoEventSource( imagesBucket, {
+        StartingPosition: lambda.StartingPosition.LATEST,
+        retryAttempts: 10
+      })
+    )
+
+    // IAM rights and Permissions
     ordersQueue.grantSendMessages(generateOrdersFn);
+    imagesBucket.grantRead(processImageFn);
+    imagesBucket.grantStreamRead(confirmationMailerFn)
+
 
     newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
 
@@ -197,11 +212,11 @@ export class CA2AppStack extends cdk.Stack {
         new s3n.SnsDestination(newImageTopic)  // Changed
     );
 
-    newImageTopic.addSubscription(
-      new subs.SqsSubscription(imageProcessQueue)
-    );
+    // newImageTopic.addSubscription(
+    //   new subs.SqsSubscription(imageProcessQueue)
+    // );
 
-  // subscrib
+  // subscribe
 
   snsTopic.addSubscription(
     new subs.LambdaSubscription(processSNSMessageFn, {
@@ -244,16 +259,14 @@ export class CA2AppStack extends cdk.Stack {
   )
 
    // SQS --> Lambda
-    const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    });
+    // const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
+    //   batchSize: 5,
+    //   maxBatchingWindow: cdk.Duration.seconds(5),
+    // });
 
-    processImageFn.addEventSource(newImageEventSource);
+    // processImageFn.addEventSource(newImageEventSource);
 
-    // Permissions
 
-    imagesBucket.grantRead(processImageFn);
 
     // Output
     
