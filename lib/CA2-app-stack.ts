@@ -8,6 +8,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 
 import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
@@ -40,6 +41,19 @@ export class CA2AppStack extends cdk.Stack {
       publicReadAccess: false,
     });
 
+    const imageTable = new dynamodb.Table(this, "ImageTable",{
+      partitionKey: {
+        name: "ImageName",
+        type: dynamodb.AttributeType.STRING
+      },
+        stream: dynamodb.StreamViewType.NEW_IMAGE
+      }
+    )
+
+    const deadLetterQueue = new sqs.Queue(this, 'dead-letter-queue', {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+    })
+
     // Queues
     const badOrdersQueue = new sqs.Queue(this, "bad-orders-q", {
       retentionPeriod: Duration.minutes(10),
@@ -55,9 +69,13 @@ export class CA2AppStack extends cdk.Stack {
 
       // Integration infrastructure
 
-    // const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
-    //   receiveMessageWaitTime: cdk.Duration.seconds(10),
-    // });
+    const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+      deadLetterQueue: {
+        queue: deadLetterQueue,
+        maxReceiveCount: 1,
+      },
+    });
 
     const confirmationMailerFn = new lambdanode.NodejsFunction(this, 'confirmationMailer-function', {
       runtime: lambda.Runtime.NODEJS_18_X,
@@ -69,6 +87,10 @@ export class CA2AppStack extends cdk.Stack {
     const mailerQ = new sqs.Queue(this, "mailer-queue", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
     });
+
+    const deadLetterQ = new sqs.Queue(this, "dead-letter-queue", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+    })
 
 
     const newImageTopic = new sns.Topic(this, "NewImageTopic", {
@@ -118,6 +140,10 @@ export class CA2AppStack extends cdk.Stack {
         entry: `${__dirname}/../lambdas/processImage.ts`,
         timeout: cdk.Duration.seconds(15),
         memorySize: 128,
+        environment: {
+          DQL_URL: deadLetterQ.queueUrl,
+        }
+
       }
     );
 
@@ -192,6 +218,8 @@ export class CA2AppStack extends cdk.Stack {
       })
     )
 
+    
+
     // IAM rights and Permissions
     ordersQueue.grantSendMessages(generateOrdersFn);
     imagesBucket.grantRead(processImageFn);
@@ -211,6 +239,12 @@ export class CA2AppStack extends cdk.Stack {
         s3.EventType.OBJECT_CREATED,
         new s3n.SnsDestination(newImageTopic)  // Changed
     );
+
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(mailerFn)
+    )
+
+
 
     // newImageTopic.addSubscription(
     //   new subs.SqsSubscription(imageProcessQueue)

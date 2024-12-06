@@ -1,10 +1,6 @@
 {
-    "user_type": {
+    "metadata_type": {
         "DataType": "String",
-        "StringValue": "Student"
-    },
-    "source": {
-        "DataType": "String",
-        "StringValue": "Slack-DS"
+        "StringValue": "Caption"
     }
 }

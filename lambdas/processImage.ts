@@ -8,7 +8,15 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 
+import { 
+  SQSClient,
+  SendMessageCommandInput,
+  SendMessageCommand
+} from '@aws-sdk/client-sqs'
+
 const s3 = new S3Client();
+const DLQ_URL = process.env.DLQ_URL
+const sqs = new SQSClient()
 
 export const handler: SQSHandler = async (event) => {
   console.log("Event ", JSON.stringify(event));
@@ -31,6 +39,20 @@ export const handler: SQSHandler = async (event) => {
             Key: srcKey,
           };
           origimage = await s3.send(new GetObjectCommand(params));
+          if (!srcKey.endsWith('.png') || !srcKey.endsWith('jpeg') || !srcKey.endsWith('jpg')) {
+            console.log(`Invalid File Type : ${srcKey} \n Please make sure that the file is either a PNG or JPG/JPEG`)
+            const dlqMsgParams: SendMessageCommandInput = {
+              QueueUrl: DLQ_URL,
+              MessageBody: JSON.stringify({
+                  error: "unsupported file type",
+                  srcBucket,
+                  srcKey,
+              }),
+            }
+            await sqs.send(new SendMessageCommand(dlqMsgParams))
+            console.log(`Message sent to dead letter queue: ${srcKey}`)
+          }
+          
           // Process the image ......
         } catch (error) {
           console.log(error);
