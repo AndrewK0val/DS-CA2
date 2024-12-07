@@ -10,8 +10,6 @@ if (!SES_EMAIL_FROM || !SES_EMAIL_TO || !SES_REGION) {
     )
 }
 
-
-
 const client = new SESClient({region: SES_REGION})
 
 export const handler: SQSHandler = async (event) => {
@@ -20,15 +18,12 @@ export const handler: SQSHandler = async (event) => {
     for(const record of event.Records) {
     try{
         const recordBody = JSON.parse(record.body)
-
         try {
             const snsMessage = JSON.parse(recordBody.Message)
             const s3Event = snsMessage?.Records?.[0]?.s3
             const srcKey = decodeURIComponent(s3Event?.object?.key || "Unknown file")
             if (srcKey.endsWith("jpeg") || srcKey.endsWith("jpg") || srcKey.endsWith("png"))
                 console.log(`file type ${srcKey} is valid and should not be in DLQ`)
-                continue
-
                 const {name, email, message}: ContactDetails = {
                     name: "File Rejection",
                     email: SES_EMAIL_FROM,

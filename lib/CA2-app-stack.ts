@@ -17,7 +17,7 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
 import { LambdaAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { userInfo } from "os";
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { eventNames } from "process";
 
 export class CA2AppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -94,7 +94,6 @@ export class CA2AppStack extends cdk.Stack {
       }
     )
 
-
     const mailerFn = new lambdanode.NodejsFunction(this, "mailer-function", {
       runtime: lambda.Runtime.NODEJS_16_X,
       memorySize: 1024,
@@ -121,6 +120,19 @@ export class CA2AppStack extends cdk.Stack {
     imagesBucket.grantRead(processImageFn)
     imageTable.grantReadWriteData(processImageFn)
     imageTable.grantReadWriteData(updateTableFn)
+    imageTable.grantStreamRead(confirmationMailerFn)
+
+    confirmationMailerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ses:SendEmail",
+          "ses: SendRawEmail",
+          "ses:SendTemplateEmail",
+        ],
+        resources: ["*"],
+      })
+    )
 
 
     mailerFn.addToRolePolicy(
@@ -177,38 +189,42 @@ export class CA2AppStack extends cdk.Stack {
         new s3n.SnsDestination(newImageTopic)  // Changed
     );
 
-    newImageTopic.addSubscription(
-      new subs.LambdaSubscription(mailerFn)
-    )
-
-    newImageTopic.addSubscription(
-      new subs.SqsSubscription(imageProcessQueue)
-    )
 
     newImageTopic.addSubscription(
       new subs.LambdaSubscription(updateTableFn, {
         filterPolicy: {
-          meatdata_type: sns.SubscriptionFilter.stringFilter({
-            allowlist: ["Caption", "Data", "Photographer"]
+          metadata_type: sns.SubscriptionFilter.stringFilter({
+            allowlist: ["Caption", "Delete", "Photographer"]
+          })
+        }
+      })
+    );
+
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(imageProcessQueue, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            eventName: sns.FilterOrPolicy.filter(sns.SubscriptionFilter.stringFilter({
+              allowlist:["ObjectCreated:Put", "ObjectRemoved:Delete"],
+            })),
+          })
+        }
+      })
+    )
+
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(mailerFn, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            eventName: sns.FilterOrPolicy.filter(sns.SubscriptionFilter.stringFilter({
+              allowlist:["ObjectCreated:Put"],
+            })),
           })
         }
       })
     )
 
 
-  // newImgTopic.addSubscription(
-  //   new subs.SqsSubscription(sqsQueue, {
-  //     rawMessageDelivery: true,
-  //     filterPolicy: {
-  //       user_type: sns.SubscriptionFilter.stringFilter({
-  //         denylist: ["Lecturer"]
-  //       }),
-  //       source: sns.SubscriptionFilter.stringFilter({
-  //         matchPrefixes: ['Moodle', 'Slack']
-  //       }),
-  //     },
-  //   })
-  // );
 
   // event srcs
 
@@ -236,9 +252,14 @@ export class CA2AppStack extends cdk.Stack {
     }); 
 
     processImageFn.addEventSource(newImageEventSource);
-
-
-
+    confirmationMailerFn.addEventSource(
+      new events.DynamoEventSource(imageTable, {
+        startingPosition: lambda.StartingPosition.LATEST,
+        retryAttempts: 10
+      })
+    )
+    rejectionMailerFn.addEventSource(newImageEventSourceDLQ)
+    
     // Output
     
     new cdk.CfnOutput(this, "bucketName", {
