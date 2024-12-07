@@ -80,38 +80,19 @@ export class CA2AppStack extends cdk.Stack {
       }
     );
 
-    const processSNSMessageFn = new lambdanode.NodejsFunction(
+    const updateTableFn = new lambdanode.NodejsFunction(
       this,
-      "processSNSFn",
+      "UpdateTableFn",
       {
-        runtime: lambda.Runtime.NODEJS_16_X,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: `${__dirname}/../lambdas/updateTable.ts`,
+        timeout: cdk.Duration.seconds(15),
         memorySize: 128,
-        timeout: cdk.Duration.seconds(3),
-        entry: `${__dirname}/../lambdas/processSnsMessage.ts`,
+        environment: {
+          TABLE_NAME: imageTable.tableName,
+        }
       }
     )
-
-    const processSQSMessageFn = new lambdanode.NodejsFunction(
-      this,
-      "processSQSMsgFn",
-      {
-        runtime: lambda.Runtime.NODEJS_16_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(3),
-        entry: `${__dirname}/../lambdas/processSqsMessage.ts`,
-      }
-    );
-
-    const processFailuresFn = new lambdanode.NodejsFunction(
-      this,
-      "processFailedMsgFn",
-      {
-        runtime: lambda.Runtime.NODEJS_16_X,
-        memorySize: 128,
-        timeout: cdk.Duration.seconds(3),
-        entry: `${__dirname}/../lambdas/processFailures.ts`,
-      }
-    );
 
 
     const mailerFn = new lambdanode.NodejsFunction(this, "mailer-function", {
@@ -138,6 +119,8 @@ export class CA2AppStack extends cdk.Stack {
     // IAM rights and Permissions
 
     imagesBucket.grantRead(processImageFn)
+    imageTable.grantReadWriteData(processImageFn)
+    imageTable.grantReadWriteData(updateTableFn)
 
 
     mailerFn.addToRolePolicy(
@@ -202,18 +185,16 @@ export class CA2AppStack extends cdk.Stack {
       new subs.SqsSubscription(imageProcessQueue)
     )
 
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(updateTableFn, {
+        filterPolicy: {
+          meatdata_type: sns.SubscriptionFilter.stringFilter({
+            allowlist: ["Caption", "Data", "Photographer"]
+          })
+        }
+      })
+    )
 
-  // subscribe
-
-  newImgTopic.addSubscription(
-    new subs.LambdaSubscription(processSNSMessageFn, {
-      filterPolicy: {
-        user_type: sns.SubscriptionFilter.stringFilter(
-          {allowlist: ['Student', 'Lecturer']}
-        ),
-      },
-    })
-  );
 
   // newImgTopic.addSubscription(
   //   new subs.SqsSubscription(sqsQueue, {

@@ -33,9 +33,13 @@ e.g.
 
 e.g.
 
+
 + Confirmation Mailer - Not implemented.
 + Process Image - Fully implemented.
 + Update Table - Fully implemented.
 + etc
 + etc
 
+
+### References and support material:
+* https://stackoverflow.com/questions/66591418/aws-nodejs-sdk-v3-dynamodb-updateitem-typeerror-cannot-read-property-0-of-u

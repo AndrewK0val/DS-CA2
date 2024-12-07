@@ -46,8 +46,7 @@ export const handler: SNSHandler = async (event) => {
       } 
     } catch (error) {
       console.log(`Error, Invalid SNS message: ${error}`)
-    }
-
+      }
     }
   }
 
