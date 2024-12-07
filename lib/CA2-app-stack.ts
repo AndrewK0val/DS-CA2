@@ -27,9 +27,9 @@ export class CA2AppStack extends cdk.Stack {
       displayName: "Demo Topic",
     })
 
-    const sqsQueue = new sqs.Queue(this, "all-msg-queue", {
-      receiveMessageWaitTime: cdk.Duration.seconds(5),
-    })
+    const newImageTopic = new sns.Topic(this, "NewImageTopic", {
+      displayName: "New Image topic",
+    });
 
     const imagesBucket = new s3.Bucket(this, "images", {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -46,24 +46,15 @@ export class CA2AppStack extends cdk.Stack {
       }
     )
 
+    // Integration infrastructure
+
     const deadLetterQueue = new sqs.Queue(this, 'dead-letter-queue', {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
     })
 
-    // Queues
-    const badOrdersQueue = new sqs.Queue(this, "bad-orders-q", {
-      retentionPeriod: Duration.minutes(10),
+    const mailerQ = new sqs.Queue(this, "mailer-queue", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
     });
-
-    const ordersQueue = new sqs.Queue(this, "orders-queue", {
-      deadLetterQueue: {
-        queue: badOrdersQueue,
-        // # of rejections by consumer (lambda function)
-        maxReceiveCount: 1,
-      },
-    });
-
-      // Integration infrastructure
 
     const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
@@ -73,27 +64,21 @@ export class CA2AppStack extends cdk.Stack {
       },
     });
 
-    const confirmationMailerFn = new lambdanode.NodejsFunction(this, 'confirmationMailer-function', {
-      runtime: lambda.Runtime.NODEJS_18_X,
-      memorySize: 1024,
-      timeout: cdk.Duration.seconds(20),
-      entry: `${__dirname}/../lambdas/confirmationMailer.ts`,
-    })
-
-    const mailerQ = new sqs.Queue(this, "mailer-queue", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
-
-    const deadLetterQ = new sqs.Queue(this, "dead-letter-queue", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    })
-
-
-    const newImageTopic = new sns.Topic(this, "NewImageTopic", {
-      displayName: "New Image topic",
-    });
-
     // Lambda functions
+
+    const processImageFn = new lambdanode.NodejsFunction(
+      this,
+      "ProcessImageFn",
+      {
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: `${__dirname}/../lambdas/processImage.ts`,
+        timeout: cdk.Duration.seconds(15),
+        memorySize: 128,
+        environment: {
+          DQL_URL: deadLetterQueue.queueUrl,
+        }
+      }
+    );
 
     const processSNSMessageFn = new lambdanode.NodejsFunction(
       this,
@@ -128,20 +113,6 @@ export class CA2AppStack extends cdk.Stack {
       }
     );
 
-    const processImageFn = new lambdanode.NodejsFunction(
-      this,
-      "ProcessImageFn",
-      {
-        runtime: lambda.Runtime.NODEJS_18_X,
-        entry: `${__dirname}/../lambdas/processImage.ts`,
-        timeout: cdk.Duration.seconds(15),
-        memorySize: 128,
-        environment: {
-          DQL_URL: deadLetterQ.queueUrl,
-        }
-
-      }
-    );
 
     const mailerFn = new lambdanode.NodejsFunction(this, "mailer-function", {
       runtime: lambda.Runtime.NODEJS_16_X,
@@ -157,7 +128,19 @@ export class CA2AppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     })
 
-      mailerFn.addToRolePolicy(
+    const confirmationMailerFn = new lambdanode.NodejsFunction(this, 'confirmation-mailer-function', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      memorySize: 1024,
+      timeout: cdk.Duration.seconds(3),
+      entry: `${__dirname}/../lambdas/confirmationMailer.ts`,
+    })
+
+    // IAM rights and Permissions
+
+    imagesBucket.grantRead(processImageFn)
+
+
+    mailerFn.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
@@ -168,74 +151,42 @@ export class CA2AppStack extends cdk.Stack {
         resources: ["*"],
       })
     );
-
-    // Handlers 
-    const processOrdersFn = new NodejsFunction(this, "ProcessOrdersFn", {
-      architecture: lambda.Architecture.ARM_64,
-      runtime: lambda.Runtime.NODEJS_18_X,
-      entry: `${__dirname}/../lambdas/processOrders.ts`,
-      timeout: Duration.seconds(10),
-      memorySize: 128,
-    });
-
-    // Generate test data
-    const generateOrdersFn = new NodejsFunction(this, "GenerateOrdersFn", {
-      architecture: lambda.Architecture.ARM_64,
-      runtime: lambda.Runtime.NODEJS_18_X,
-      entry: `${__dirname}/../lambdas/generateOrders.ts`,
-      timeout: Duration.seconds(10),
-      memorySize: 128,
-      environment: {
-        QUEUE_URL: ordersQueue.queueUrl,
-      },
-    });
-
-    const failedOrdersFn = new NodejsFunction(this, "FailedOrdersFn", {
-      architecture: lambda.Architecture.ARM_64,
-      runtime: lambda.Runtime.NODEJS_16_X,
-      entry: `${__dirname}/../lambdas/handleBadOrder.ts`,
-      timeout: Duration.seconds(10),
-      memorySize: 128,
-    });
-
-    // Event sources for lambda functions
-
-    processOrdersFn.addEventSource(
-      new SqsEventSource(ordersQueue, {
-        maxBatchingWindow: Duration.seconds(5),
-        maxConcurrency: 2,  
-      })
-    );
-
-    failedOrdersFn.addEventSource(
-      new SqsEventSource(badOrdersQueue, {
-        maxBatchingWindow: Duration.seconds(5),
-        maxConcurrency: 2,
-      })
-    );
-
-    confirmationMailerFn.addEventSource(
-      new events.DynamoEventSource( imageTable, {
-        StartingPosition: lambda.StartingPosition.LATEST,
-        retryAttempts: 10
+    
+    rejectionMailerFn.addToRolePolicy( 
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ses:SendEmail",
+          "ses:SendRawEmail",
+          "ses:SendTemplatedEmail",
+        ],
+        resources: ["*"],
       })
     )
 
+    processImageFn.addToRolePolicy (
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "sqs:sendMessage"
+        ],
+        resources: ["*"]
+      })
+    )
 
+    // Handlers 
 
-    // IAM rights and Permissions
-    ordersQueue.grantSendMessages(generateOrdersFn);
-    imagesBucket.grantRead(processImageFn);
-    imagesBucket.grantStreamRead(confirmationMailerFn)
+    // Event sources for lambda functions
 
+    // confirmationMailerFn.addEventSource(
+    //   new events.DynamoEventSource( imageTable, {
+    //     StartingPosition: lambda.StartingPosition.LATEST,
+    //     retryAttempts: 10
+    //   })
+    // )
 
     newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
 
-
-    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    }); 
 
     // S3 --> SQS
     imagesBucket.addEventNotification(
@@ -247,11 +198,10 @@ export class CA2AppStack extends cdk.Stack {
       new subs.LambdaSubscription(mailerFn)
     )
 
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(imageProcessQueue)
+    )
 
-
-    // newImageTopic.addSubscription(
-    //   new subs.SqsSubscription(imageProcessQueue)
-    // );
 
   // subscribe
 
@@ -265,35 +215,44 @@ export class CA2AppStack extends cdk.Stack {
     })
   );
 
-  newImgTopic.addSubscription(
-    new subs.SqsSubscription(sqsQueue, {
-      rawMessageDelivery: true,
-      filterPolicy: {
-        user_type: sns.SubscriptionFilter.stringFilter({
-          denylist: ["Lecturer"]
-        }),
-        source: sns.SubscriptionFilter.stringFilter({
-          matchPrefixes: ['Moodle', 'Slack']
-        }),
-      },
-    })
-  );
+  // newImgTopic.addSubscription(
+  //   new subs.SqsSubscription(sqsQueue, {
+  //     rawMessageDelivery: true,
+  //     filterPolicy: {
+  //       user_type: sns.SubscriptionFilter.stringFilter({
+  //         denylist: ["Lecturer"]
+  //       }),
+  //       source: sns.SubscriptionFilter.stringFilter({
+  //         matchPrefixes: ['Moodle', 'Slack']
+  //       }),
+  //     },
+  //   })
+  // );
 
   // event srcs
 
-  processSQSMessageFn.addEventSource(
-    new SqsEventSource(sqsQueue, {
-      maxBatchingWindow: Duration.seconds(5),
-      maxConcurrency: 2,
-    })
-  );
+  // processSQSMessageFn.addEventSource(
+  //   new SqsEventSource(sqsQueue, {
+  //     maxBatchingWindow: Duration.seconds(5),
+  //     maxConcurrency: 2,
+  //   })
+  // );
 
 
   //  SQS --> Lambda
+    const newImageEventSourceDLQ = new events.SqsEventSource(imageProcessQueue, {
+
+    })
+
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
       batchSize: 5,
       maxBatchingWindow: cdk.Duration.seconds(5),
     });
+
+    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(5),
+    }); 
 
     processImageFn.addEventSource(newImageEventSource);
 
